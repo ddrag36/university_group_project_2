@@ -1,0 +1,514 @@
+:::{.callout-note}
+:::
+
+```{r}
+#| label: R packages
+#| echo: false
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(ggplot2)
+library(corrplot) 
+library(dplyr)
+library(cowplot)
+library(randomForest)
+library(caret)
+library(xgboost)
+library(corrr)
+library(rpart)
+library(rpart.plot)
+library(pheatmap)
+
+```
+
+```{r}
+#| label: data loading
+#| echo: false
+
+# Set this to the folder containing your file
+train_data <- readRDS("./train.rds")
+train_data1 <- readRDS("./train.rds") # for the correlation matrix for KNN
+test_data <- readRDS("./test.rds")
+
+```
+
+# Data description
+The dataset contains various characteristics of a group of students whose performance is going to be estimated. The characteristics are described from a set of numeric, binary and nominal variables and the performance of each student is stored in a numeric variable named "score", which will be the response variable in our analysis. The aim of the analysis is to predict the academic success of students through examining the factors that influence it.
+First, we explore the data that will be used to train the models (training data). We construct a barplot in order to understand how gender is distributed throughout the data.
+```{r}
+#| label: Distribution of Gender
+
+# barplot of "sex" variable
+
+gender_plot <- ggplot(train_data, aes(x=sex)) + geom_bar(fill=c("pink", "blue")) + 
+  labs(title="Distribution of Gender", x="Sex", y="Count") + theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+print(gender_plot)
+
+```
+As the gender plot implies, the current group of students consists more females than males by almost 25 more girls.
+Next, we take a look at the relation between the target variable ("score") and the time that each student spends on studying ("studytime").
+```{r}
+#| label: Scatterplot of Failures vs Score
+studytime_plot <- ggplot(train_data, aes(x=failures, y=score)) + geom_point() + 
+  labs(title="Failures vs Score", x="Failures", y="Score") + theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+print(studytime_plot)
+
+```
+Students with no failures (failures = 0) seem to have scores distributed across a wider range, whereas higher failure counts are associated with lower scores.
+We check the correlation between certain variables that may affect one another by creating their correlation plot.
+```{r}
+#| label: Correlation plot of studytime, failures, absences, age, goout, score
+
+df <- data.frame(train_data$studytime, train_data$failures, train_data$absences, train_data$score, train_data$age, train_data$goout)
+res <- cor(df)
+corr_plot <- corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+print(corr_plot)
+
+```
+There is indeed some correlation between these variables, but it's not very strong.
+# Model description
+We chose 5 prediction methods to predict score for the students. Score is a numeric variable and the methods that we will use are the following: Linear Regression, Regression Tree, 
+Random Forest, KNN and XGBoost. 
+Linear regression is a popular statistical method used to measure how one or more factors relate to a specific outcome. In our project, we used multiple linear regression to predict the final outcome based on a variety of variables. 
+Regression trees are based on the CART algorithm, an algorithm that creates decision trees. The latter are statistical prediction models where in each branch of the tree decisions are made concerning the attributes (independent variables) from which the target variable of interest depends on. Each decision is based on an optimal split condition in order to make accurate predictions followed by a small error. An extended, more improved algorithm is the method of Random Forest. This is an ensemble method that builds multiple decision trees and aggregates their results to improve accuracy and reduce overfitting. We chose Random Forest due to its ability to handle a variety of data types (both numerical and categorical) and its robustness against overfitting. 
+K-Nearest Neighbors (KNN) is a simple yet powerful algorithm used for both classification and regression tasks. In our project, we applied KNN for regression to predict the students' scores. KNN can capture complex patterns in the data when the right value of 'k' is chosen and the features are properly scaled, as the algorithm is sensitive to the scale of the variables. In our project, we ensured that the input variables were normalized to prevent features with larger scales from dominating the distance calculations. 
+XGBoost is a powerful and efficient machine learning algorithm that builds upon gradient boosting techniques. It stands out due to its ability to handle missing data, regularization features that prevent overfitting, and parallel processing for faster performance. This method enhances the precision of the predictions by iteratively improving the performance of weak learners. 
+
+
+
+# Data transformation and pre-processing
+First of all, we checked the dataset for missing values. The dataset did not have any missing values, so no imputation was necessary. Additionally, no scaling of the data was done, as all methods are invariant to the scale of features.
+For all methods, we split randomly the dataset into a training set (80%) and a test set (20%) to build and evaluate the model's performance. For linear regression all categorical columns were converted into factors so they can be used in the regression model. Moreover, factor variables were converted temporarily into numeric to check for multicollinearity. This step is important because correlation matrix requires numeric data. 
+
+```{r}
+#| label: Check for missing values
+
+# Check for missing values in our data
+colSums(is.na(train_data)) 
+
+```
+
+```{r}
+#| label: Convert categorical columns into factors
+
+# Convert categorical (character) columns into factors for proper handling in the regression model
+train_data_factors <- train_data %>%
+  mutate(across(where(is.character), as.factor))
+
+```  
+
+In terms of regression trees and random forests, no significant transformations were required, as the Random Forest model natively handles both categorical and continuous variables.  
+
+A correlation matrix was created to examine the correlation between the variables and the target variable 'score'. For data preparation, categorical variables in the training dataset was converted to numerical values using 'ifelse'. For nominal variables, dummy coding was applied to generate one-hot encoded columns. The correlation matrix was calculated for the numeric variables in the training set, including the target variable 'score'. To visualize the correlations, a bar chart was used. Positive correlations between the 'score' and other variables were represented in blue, while negative correlations were represented in red.
+```{r}
+#| label: Correlation matrix for KNN
+#| 
+# Convert categorical train values to numeric
+train_data1 <- train_data1 %>%
+  mutate(
+    school_numeric = ifelse(train_data1$school == "GP", 0, 1),
+    sex_numeric = ifelse(train_data1$sex == "F", 0, 1),
+    address_numeric = ifelse(train_data1$address == "U", 0, 1),
+    famsize_numeric = ifelse(train_data1$famsize == "LE3", 0, 1),
+    Pstatus_numeric = ifelse(train_data1$Pstatus == "T", 0, 1),
+    schoolsup_numeric = ifelse(train_data1$schoolsup == "yes", 1, 0),
+    famsup_numeric = ifelse(train_data1$famsup == "yes", 1, 0),
+    paid_numeric = ifelse(train_data1$paid == "yes", 1, 0),
+    activities_numeric = ifelse(train_data1$activities == "yes", 1, 0),
+    nursery_numeric = ifelse(train_data1$nursery == "yes", 1, 0),
+    higher_numeric = ifelse(train_data1$higher == "yes", 1, 0),
+    internet_numeric = ifelse(train_data1$internet == "yes", 1, 0),
+    romantic_numeric = ifelse(train_data1$romantic == "yes", 1, 0)
+  ) %>%
+  select(-c(school, sex, address, famsize, Pstatus, schoolsup, famsup, paid, activities, nursery, higher, internet, romantic))
+
+# Convert nominal variables to numeric (one-hot encoding) separately
+mjob_dummies <- model.matrix(~ Mjob - 1, data = train_data1) 
+fjob_dummies <- model.matrix(~ Fjob - 1, data = train_data1)
+reason_dummies <- model.matrix(~ reason - 1, data = train_data1)
+guardian_dummies <- model.matrix(~ guardian - 1, data = train_data1)
+
+# Combine all numeric data
+numeric_train_data <- bind_cols(
+  train_data1 %>% select(-one_of(c("Mjob", "Fjob", "reason", "guardian"))), 
+  as.data.frame(mjob_dummies), 
+  as.data.frame(fjob_dummies), 
+  as.data.frame(reason_dummies), 
+  as.data.frame(guardian_dummies)
+)
+
+str(numeric_train_data)
+
+# Add the score column
+numeric_train_data <- numeric_train_data %>%
+  mutate(score = train_data1$score)
+
+# Calculate the correlation matrix
+cor_matrix <- numeric_train_data %>%
+  select_if(is.numeric) %>%
+  correlate()
+
+score_correlations <- cor_matrix %>%
+  focus(score)
+
+print(score_correlations, n = Inf)
+
+
+# Prepare for the bar chart
+score_correlations_df <- as.data.frame(score_correlations)
+
+# Bar chart
+ggplot(score_correlations_df, aes(x = reorder(term, score), y = score, fill = score > 0)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("TRUE" = "blue", "FALSE" = "red"), 
+                    labels = c("TRUE" = "Positive Correlation", "FALSE" = "Negative Correlation")) +
+  labs(title = "Correlation between Numeric Train Data and Score",
+       x = "Variables",
+       y = "Correlation") +
+  theme_minimal() +
+  coord_flip()  # Flip coordinates for better readability
+```
+
+For the method of XGBoosting, we conducted a correlation analysis to select significant variables related to the target (score) and filtered out those with weak correlations. A heatmap was then used to check for multicollinearity among the selected variables, ensuring a clean set of predictors for the models. For this we firstly converted all variables to numeric. 
+
+# Model comparison
+First, the function set.seed() is used in order to ensure reproducibility and quick reference to our dataset as it can replicate the same dataset whenever we call a specific seed.
+Linear regression: We used linear regression to predict the dependent variable (score) based on multiple independent variables. First, we created a regression model using all variables of the training set. We applied the stepwise method (for both directions) to identify the most important predictors. To double check the selected variables from the stepwise method, we created a correlation matrix to ensure that the predictors were not highly correlated with each other. Finally, we build the final regression model with the selected predictors and calculated the MSE on test data we split before.
+
+```{r}
+#| label: Multiple linear regression
+
+# Split the dataset into training (80%) and testing (20%) sets
+set.seed(40)  #for reproducibility
+train <- sample(1:nrow(train_data_factors), 0.8* nrow(train_data_factors))
+test <- train_data_factors[-train,]
+ 
+# Build an initial linear regression model using all variables in the dataset
+regr_model <- lm(score ~ ., data = train_data_factors, subset = train)
+ 
+# Use stepwise selection to identify the best subset of variables for the model
+# Stepwise method checks both forward and backward directions
+stepwise_model <- step(regr_model, direction = "both", trace = 1)
+ 
+summary(stepwise_model)
+ 
+ 
+# Correlation analysis to verify the relationships between the selected variables
+# Create a new data frame containing only the selected variables from stepwise selection
+selected_variables <- train_data_factors %>%
+  select(score, sex, age, Medu, Mjob, studytime, failures, schoolsup, famsup, romantic, goout, health)
+ 
+# Convert factor variables into numeric format for correlation analysis
+# Correlation analysis requires numerical data, so we convert categorical variables
+selected_variables_numeric <- selected_variables %>%
+  mutate(across(where(is.factor), as.numeric))
+ 
+# Calculate the correlation matrix for the selected variables to check for multicollinearity
+correlation_matrix <- cor(selected_variables_numeric)
+print(correlation_matrix)
+ 
+ 
+# Build the final linear regression model using the variables selected by the stepwise method
+regr_model_final <- lm(formula = score ~ sex + age + Medu + Mjob + studytime + failures + 
+                         schoolsup + famsup + romantic + goout + health, data = train_data, subset = train)
+ 
+regr_model_summary <- summary(regr_model_final)
+
+# Predict scores on the test data using the final regression model
+predicted_score_final <- predict(regr_model_final, newdata = test)
+ 
+# Calculate the Mean Squared Error (MSE) to evaluate the model's performance on the test data
+mse_lr <- mean((test$score - predicted_score_final)^2)
+print(paste("MSE value for linear regression",mse_lr))
+ 
+# Print R-squared value
+R_squared_lr <- regr_model_summary$r.squared
+print(paste("R-squared value for linear regression:", R_squared_lr))
+
+```   
+  
+Regression Tree Method:
+Regression Tree is part of decision trees and we use it to predict the score variable (response variable) for the students, which is a numerous variable. The predictors will come from the initial dataset train_data. The latter contains both numerous and categorical (binary, nominal) features.
+The regression tree is constructed using the training data with the help of the rpart() function from the "rpart" package. With the input rpart.control(xval=5), R performs 5-fold cross validation. The printcp() function returns a matrix regarding the complexity parameter a and produces the optimal splits, according to a. The preferred value of a is the one that reduces the error that occurred during the cross validation process ("xerror"). Next, we are going to try to prune the tree in order to make it less complex and avoid overfitting. We split the tree using the optimal (best) value of a. Finally, we make predictions using the pruned tree on the testing data. We, then, calculate the MSE and the R squared to review our model's performance.
+```{r}
+#| label: Regression Tree
+
+# Fitting the regression tree using the training data by performing 5-fold cross validation
+reg_tree <- rpart (score~., train_data, subset = train , control = rpart.control(xval =5))
+printcp(reg_tree)
+ 
+# Number of leaf nodes (leaves) of the regression tree
+num_leaf_nodes <- sum(reg_tree$frame$var == "<leaf>")
+print(paste("Number of leaf nodes in the tree:", num_leaf_nodes))
+ 
+# Tree pruning using the optimal value for a
+best <- reg_tree$cptable[which.min(reg_tree$cptable [,"xerror"]), "CP"]
+pruned_tree <- prune(reg_tree ,cp= best)
+ 
+# Plotting the pruned regression tree
+prp(pruned_tree, main = "Pruned Regression Tree")
+ 
+# Make predictions on the testing data using the pruned (regression) tree and calculating the MSE and the
+# R^2
+score_hat <- predict(pruned_tree, newdata = test)
+score_test <- test$score
+mse_pruned <- mean((score_test-score_hat)^2)
+SSE_pruned <- sum((score_test - score_hat) ^ 2)
+SST_pruned <- sum((score_test - mean(score_test)) ^ 2)
+R_squared_pruned <- 1 - (SSE_pruned / SST_pruned)
+print(paste("The MSE for the pruned tree on the test data is:", mse_pruned))
+print(paste("The R-squared for the pruned tree on the test data is:", R_squared_pruned))
+
+```
+
+To assess the performance of the Random Forest model, we also used 5-fold cross-validation. This technique split the training data into 5 equal parts, training the model on 4 parts while validating it on the remaining part. This process was repeated 5 times, each time using a different fold for validation, and the performance was averaged over all 5 iterations. This cross-validation approach provided a more robust estimate of the model's performance compared to a single train-test split. The Mean Squared Error (MSE) and R-squared metrics were calculated to evaluate the model's accuracy on the test data. These metrics were used to compare the model's performance before and after cross-validation. The model was trained using 500 trees (ntree = 500) and default settings for the mtry parameter, which selects the number of features to consider at each split. By using cross-validation, we ensured that the model generalized well to unseen data, which is critical for real-world prediction tasks.
+```{r}
+#| label: Random Forest
+
+# Set up cross-validation with 5 folds
+control <- trainControl(method="cv", number=5)
+
+# Train the Random Forest model with cross-validation
+rf_cv <- train(score ~ ., data=train_data,subset=train1, method="rf", 
+               trControl=control, ntree=500)  # No tuneGrid used here
+
+# Print the final model
+print(rf_cv)
+
+# Predict on the test set using the cross-validated model
+predicted_score <- predict(rf_cv, newdata=test1)
+
+# Calculate Mean Squared Error
+mse_rf <- mean((test1$score - predicted_score)^2)
+print(paste("MSE with cross-validation:", mse_rf))
+
+# Calculate R-squared
+SSE_rf <- sum((test1$score - predicted_score)^2)
+SST_rf <- sum((test1$score - mean(test$score))^2)
+R_squared_rf <- 1 - (SSE_rf/SST_rf)
+print(paste("R-squared with cross-validation:", R_squared_rf))
+
+```
+
+KNN Model:
+Based on the correlation matrix, several variables with a high correlation to the target variable 'score' were selected for KNN model. These variables are: Medu, Fedu, higher_numeric, Mjob, sex_numeric, failures, goout, age, schoolsup_numeric, romantic_numeric, and health. From this dataset of selected variables, an 80% train set and a 20% test set were created. The data in the train set (excluding 'score') was normalized to improve the model's performance, as normalization is important for KNN since it relies on distance calculations, which can be biased by varying scales of data. However, the 'score' variable was not normalized because it is the target variable we are predicting, and normalizing it would distort the original values, making the predictions harder to interpret. Then, a KNN model was built using 10-fold cross-validation to determine the best hyperparameters. Predictions were made on the test set, and the Mean Squared Error (MSE) was calculated to assess the model's prediction performance. Based on the MSE result, it can be concluded that some improvements are needed to enhance the model's performance.
+```{r}
+#| label: KNN Model
+
+selected_var_knn <- c("Medu", "Fedu", "higher_numeric", "studytime", 
+                  "sex_numeric", "failures", "goout", 
+                  "age", "schoolsup_numeric", "romantic_numeric", "health", 
+                  "Mjobat_home", "Mjobhealth", "Mjobother", 
+                  "Mjobservices", "Mjobteacher")
+
+selected_train <- numeric_train_data[, selected_var_knn]  
+selected_train$score <- numeric_train_data$score  
+
+str(selected_train)
+
+library(caret)  
+set.seed(123)
+
+# 80-20 split
+train_indices <- sample(1:nrow(selected_train), 0.8 * nrow(selected_train))
+train_set <- selected_train[train_indices, ]
+test_set <- selected_train[-train_indices, ]
+
+# Normalize the data (not score)
+preProc <- preProcess(train_set[, -which(names(train_set) == "score")], method = c("center", "scale"))
+train_set_normalized <- predict(preProc, train_set)
+test_set_normalized <- predict(preProc, test_set)
+
+str(train_set_normalized)
+str(test_set_normalized)
+
+# Cross validation
+control <- trainControl(method = "cv", number = 10)
+
+# KNN Model with cross validation
+knn_cv <- train(score ~ ., data = train_set_normalized, method = "knn", trControl = control, tuneLength = 10)
+print(knn_cv)
+
+# Predictions
+knn_predictions <- predict(knn_cv, newdata = test_set_normalized)
+
+# Actual and predictions
+results_df <- data.frame(
+  Actual = test_set$score,
+  Predicted = knn_predictions
+)
+print(results_df) 
+
+#MSE
+mse_knn <- mean((test_set$score - knn_predictions)^2)
+print(paste("KNN MSE:", mse_knn))
+
+# R-squared
+sst <- sum((test_set$score - mean(test_set$score))^2)  
+sse <- sum((test_set$score - knn_predictions)^2)       
+R_squared_knn <- 1 - (sse / sst)  
+print(paste("KNN R-squared:", R_squared_knn))
+```
+
+XGBoosting: 
+We used XGBoost to predict the dependent variable (score) based on multiple independent variables. First, we converted the training and test data to matrix format, ensuring all variables were numeric. We then trained the XGBoost model with 300 boosting rounds and a learning rate (eta) of 0.1. To improve performance, we experimented with the model's depth (max_depth = 8). Finally, we made predictions on the test set, calculated the MSE, and computed the R-squared to assess the model's accuracy.
+```{r}
+#| label: XGBoosting
+
+str(train_data)
+
+
+# Ensure all variables are numeric 
+
+train_data$school <- as.numeric(factor(train_data$school))
+train_data$sex <- as.numeric(factor(train_data$sex))
+train_data$address <- as.numeric(factor(train_data$address))
+train_data$famsize <- as.numeric(factor(train_data$famsize))
+train_data$Pstatus <- as.numeric(factor(train_data$Pstatus))
+train_data$romantic <- as.numeric(factor(train_data$romantic))
+train_data$Mjob <- as.numeric(factor(train_data$Mjob))
+train_data$Fjob <- as.numeric(factor(train_data$Fjob))
+train_data$reason <- as.numeric(factor(train_data$reason))
+train_data$guardian <- as.numeric(factor(train_data$guardian))
+train_data$famsup <- as.numeric(factor(train_data$famsup))
+train_data$paid <- as.numeric(factor(train_data$paid))
+train_data$activities <- as.numeric(factor(train_data$activities))
+train_data$nursery <- as.numeric(factor(train_data$nursery))
+train_data$higher <- as.numeric(factor(train_data$higher))
+train_data$internet <- as.numeric(factor(train_data$internet))
+train_data$romantic <- as.numeric(factor(train_data$romantic))
+train_data$schoolsup <- as.numeric(factor(train_data$schoolsup))
+
+# Run the correlation analysis 
+
+cor_matrix <- cor(train_data)
+
+print(cor_matrix)
+
+# Extract correlation with 'score' column
+cor_with_score <- cor_matrix[, "score"]
+
+print(cor_with_score)
+
+# Remove the 'score' column from the correlation matrix
+cor_with_score <- cor_with_score[-which(names(cor_with_score) == "score")]
+
+# Filter out weak correlations (absolute value < 0.1)
+significant_vars <- names(cor_with_score[abs(cor_with_score) > 0.1])
+
+# Print the significant variables
+print(significant_vars)
+
+# checking if significant variables are strongly corerrelated between eachother 
+
+# Subset the data to only include the significant variables
+data_significant <- train_data[, significant_vars]
+
+# Calculate the correlation matrix for the significant variables
+cor_matrix_significant <- cor(data_significant)
+
+# Print the correlation matrix
+print(cor_matrix_significant)
+
+library(pheatmap)
+
+# Generate heatmap without trees
+pheatmap(cor_matrix_significant, 
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE, 
+         display_numbers = TRUE, 
+         color = colorRampPalette(c("white", "orange", "red"))(50))
+
+# Finalizing the train_data_set
+
+data_significant_final <- train_data[, c("Medu", "studytime", "age", "romantic", "schoolsup", "failures", "higher", "sex", "goout", "score")]
+
+# Verify the result
+print(data_significant_final)
+
+set.seed(40)  # For reproducibility
+
+# Split the data into 80% train and 20% test using row indices
+train_indices <- sample(1:nrow(data_significant_final), 0.8 * nrow(data_significant_final))
+test_indices <- setdiff(1:nrow(data_significant_final), train_indices)
+
+train <- data_significant_final[train_indices, ]  # Training data
+test <- data_significant_final[test_indices, ]  # Test data
+
+# Step 2: Convert train and test data to matrix format
+# For training data (excluding 'score' column for features, using 'score' as target)
+train_matrix <- as.matrix(train[, -ncol(train)])  # Exclude the score column for features
+train_label <- train$score  # Target variable (score)
+
+# For test data (excluding 'score' column for features, using 'score' as target)
+test_matrix <- as.matrix(test[, -ncol(test)])  # Exclude the score column for features
+test_label <- test$score  # Target variable (score)
+
+# Convert to xgboost DMatrix
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Step 3: Train the XGBoost model
+xgb_model <- xgboost(data = dtrain, 
+                     nrounds = 300,  # Increase number of boosting rounds
+                     max_depth = 8,  # Experiment with different depths
+                     eta = 0.1,      # Lower learning rate
+                     objective = "reg:squarederror",  # Regression task
+                     verbose = 1)
+
+# Step 4: Make predictions on the test data
+predictions <- predict(xgb_model, dtest)
+
+# Step 5: Evaluate the model (calculate Mean Squared Error on test data)
+mse_xgb <- mean((test_label - predictions)^2)
+print(paste("Mean Squared Error on Test Data:", mse_xgb))
+
+# Step 6: Calculate R-squared
+ss_total <- sum((test_label - mean(test_label))^2)
+ss_residual <- sum((test_label - predictions)^2)
+R_squared_xgb <- 1 - (ss_residual / ss_total)
+
+print(paste("R-squared on Test Data:", R_squared_xgb))
+
+# Visualize predicted vs actual scores for the test set using ggplot
+ggplot() +
+  geom_point(aes(x = test_label, y = predictions), color = "blue") +
+  geom_abline(slope = 1, intercept = 0, color = "pink", linetype = "dashed") +  # Line of perfect prediction
+  labs(x = "Actual Score", y = "Predicted Score", title = "Predicted vs Actual Scores (XGBoost - Test Data)") +
+  theme_minimal()
+
+``` 
+
+# Chosen model
+
+The final chosen model was the Random Forest model, because according to the performance results of the models has the lowest Mean Squared Error (MSE) and the highest R-squared value compared to the other models. The cross-validation step ensured that the model did not overfit the training data and was able to perform well on new, unseen data.
+In general, a low MSE indicates that a model's predictions are close to the actual outcomes (observed values). The R-squared helps us understand how much of the variability in the outcome can be explained by the model's predictors. To sum up, these metrics provide an overall view of the model's accuracy.
+
+```{r}
+#| label: Evaluation metrics of each method
+
+models_performance_results <- data.frame(
+  model = c("Linear Regression", "Regression Tree", "Random Forest", "KNN", "XGBoosting"),
+  MSE = c(mse_lr, mse_pruned, mse_rf, mse_knn, mse_xgb),
+  R_squared = c(R_squared_lr, R_squared_pruned, R_squared_rf, R_squared_knn, R_squared_xgb)
+)
+ 
+print(models_performance_results)
+
+# Assuming 'predicted_score_final' contains your predictions
+final_predicted_score_rf <- predict(rf_cv, newdata = test_data)
+ 
+# Save the predictions to a file called predictions.rds
+saveRDS(final_predicted_score_rf, file = "predictions.rds")
+
+# The final predictions for the "score" variable are calculated using the method of random forest on the original testing data and are stored in a new variable called "final_predictions"
+final_predictions <- readRDS("predictions.rds")
+print(final_predictions)
+
+```
+
+
